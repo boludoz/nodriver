@@ -148,7 +148,7 @@ months = [
 async def main():
     driver = await uc.start()
 
-    tab = await driver.get("https://twitter.com")
+    tab = await driver.get("https://twitter.com/?lang=en")
 
     # wait for text to appear instead of a static number of seconds to wait
     # this does not always work as expected, due to speed.
