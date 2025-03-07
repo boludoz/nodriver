@@ -665,24 +665,23 @@ class CookieJar:
             ]
         return cookies
 
-    async def set_all(self, cookies: List[cdp.network.CookieParam]):
+    async def set_all(cookies_handler, cookies: List[cdp.network.CookieParam]):
         """
         set cookies
-
+    
         :param cookies: list of cookies
         :type cookies:
         :return:
         :rtype:
         """
         connection = None
-        for tab in self._browser.tabs:
+        for tab in cookies_handler._browser.tabs:
             if tab.closed:
                 continue
             connection = tab
             break
         else:
-            connection = self._browser.connection
-        cookies = await connection.send(cdp.storage.get_cookies())
+            connection = cookies_handler._browser.connection
         await connection.send(cdp.storage.set_cookies(cookies))
 
     async def save(self, file: PathLike = ".session.dat", pattern: str = ".*"):
