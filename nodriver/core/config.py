@@ -37,18 +37,28 @@ AUTO = None
 
 def prefs_to_json(dot_prefs: dict) -> dict:
     """Convert dot-separated keys into nested dictionaries"""
+    def deep_merge(dict1, dict2):
+        """Recursively merge two dictionaries"""
+        result = dict1.copy()
+        for key, value in dict2.items():
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                result[key] = deep_merge(result[key], value)
+            else:
+                result[key] = value
+        return result
+    
     def undot_key(key, value):
         if "." in key:
             key, rest = key.split(".", 1)
             value = undot_key(rest, value)
         return {key: value}
 
-    undot_prefs = reduce(
-        lambda d1, d2: {**d1, **d2},
-        (undot_key(k, v) for k, v in dot_prefs.items()),
-        {}
-    )
-    return undot_prefs
+    result = {}
+    for k, v in dot_prefs.items():
+        nested_dict = undot_key(k, v)
+        result = deep_merge(result, nested_dict)
+    
+    return result
 
 
 def _sync_write_prefs(prefs: dict, path: str):
@@ -162,6 +172,7 @@ class Config:
         self.autodiscover_targets = True
         self.lang = lang
         self.prefs = prefs if prefs is not AUTO else {}
+        self._prefs_applied = False  # Track if preferences have been applied
 
         # other keyword args will be accessible by attribute
         self.__dict__.update(kwargs)
@@ -229,11 +240,13 @@ class Config:
         Apply preferences to the Chrome profile.
         This should be called after the user data directory is set up.
         """
-        if not self.prefs:
+        if not self.prefs or self._prefs_applied:
             return
         
         prefs_path = os.path.join(self.user_data_dir, "Default", "Preferences")
         prefs_dir = os.path.dirname(prefs_path)
+        
+        print(f"Applying preferences to {prefs_path}")
         
         # Create Default directory if it doesn't exist
         os.makedirs(prefs_dir, exist_ok=True)
@@ -252,12 +265,16 @@ class Config:
             data = prefs_to_json(existing_prefs)
             _sync_write_prefs(data, prefs_path)
             
+            self._prefs_applied = True  # Mark as applied
             logger.debug(f"Applied preferences to {prefs_path}")
             
         except Exception as e:
             logger.warning(f"Failed to apply preferences: {e}")
 
     def __call__(self):
+        # Apply preferences before launching browser
+        self.apply_prefs()
+        
         # the host and port will be added when starting
         # the browser, as by the time it starts, the port
         # is probably already taken
