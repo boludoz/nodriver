@@ -4,6 +4,8 @@
 # and is released under the "GNU AFFERO GENERAL PUBLIC LICENSE".
 # Please see the LICENSE.txt file that should have been included as part of this package.
 
+import asyncio
+import json
 import logging
 import os
 import pathlib
@@ -11,6 +13,7 @@ import secrets
 import sys
 import tempfile
 import zipfile
+from functools import reduce
 from typing import List, Optional, TypeVar
 
 __all__ = [
@@ -20,6 +23,9 @@ __all__ = [
     "is_root",
     "is_posix",
     "PathLike",
+    "prefs_to_json",
+    "write_prefs",
+    "read_prefs",
 ]
 
 logger = logging.getLogger(__name__)
@@ -27,6 +33,48 @@ is_posix = sys.platform.startswith(("darwin", "cygwin", "linux", "linux2"))
 
 PathLike = TypeVar("PathLike", bound=str | pathlib.Path)
 AUTO = None
+
+
+def prefs_to_json(dot_prefs: dict) -> dict:
+    """Convert dot-separated keys into nested dictionaries"""
+    def undot_key(key, value):
+        if "." in key:
+            key, rest = key.split(".", 1)
+            value = undot_key(rest, value)
+        return {key: value}
+
+    undot_prefs = reduce(
+        lambda d1, d2: {**d1, **d2},
+        (undot_key(k, v) for k, v in dot_prefs.items()),
+        {}
+    )
+    return undot_prefs
+
+
+def _sync_write_prefs(prefs: dict, path: str):
+    """Synchronously write preferences to file"""
+    with open(path, "w+", encoding="utf-8") as f:
+        json.dump(prefs, f, ensure_ascii=False, indent=2)
+
+
+async def write_prefs(prefs: dict, prefs_path: str):
+    """Asynchronously write preferences to file"""
+    loop = asyncio.get_running_loop()
+    data = prefs_to_json(prefs)
+    await loop.run_in_executor(None, _sync_write_prefs, data, prefs_path)
+
+
+def _sync_read_prefs(path: str) -> dict:
+    """Synchronously read preferences from file"""
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+async def read_prefs(prefs_path: str) -> dict:
+    """Asynchronously read preferences from file"""
+    loop = asyncio.get_running_loop()
+    prefs = await loop.run_in_executor(None, _sync_read_prefs, prefs_path)
+    return prefs
 
 
 class Config:
@@ -42,6 +90,7 @@ class Config:
         browser_args: Optional[List[str]] = AUTO,
         sandbox: Optional[bool] = True,
         lang: Optional[str] = "en-US",
+        prefs: Optional[dict] = AUTO,
         host: str = AUTO,
         port: int = AUTO,
         expert: bool = AUTO,
@@ -65,6 +114,8 @@ class Config:
         :param sandbox: disables sandbox
         :param autodiscover_targets: use autodiscovery of targets
         :param lang: language string to use other than the default "en-US,en;q=0.9"
+        :param prefs: preferences to apply to Chrome profile using dot notation keys. 
+               eg: {"profile.default_content_setting_values.images": 2} to disable images
         :param expert: when set to True, enabled "expert" mode.
                This conveys, the inclusion of parameters:  ----disable-site-isolation-trials,
                as well as some scripts and patching useful for debugging (for example, ensuring shadow-root is always in "open" mode)
@@ -77,6 +128,7 @@ class Config:
         :type browser_args: list[str]
         :type sandbox: bool
         :type lang: str
+        :type prefs: dict
         :type kwargs: dict
         """
 
@@ -109,6 +161,7 @@ class Config:
 
         self.autodiscover_targets = True
         self.lang = lang
+        self.prefs = prefs if prefs is not AUTO else {}
 
         # other keyword args will be accessible by attribute
         self.__dict__.update(kwargs)
@@ -170,6 +223,39 @@ class Config:
             for item in path.rglob("manifest.*"):
                 path = item.parent
             self._extensions.append(path)
+
+    def apply_prefs(self):
+        """
+        Apply preferences to the Chrome profile.
+        This should be called after the user data directory is set up.
+        """
+        if not self.prefs:
+            return
+        
+        prefs_path = os.path.join(self.user_data_dir, "Default", "Preferences")
+        prefs_dir = os.path.dirname(prefs_path)
+        
+        # Create Default directory if it doesn't exist
+        os.makedirs(prefs_dir, exist_ok=True)
+        
+        try:
+            # Read existing preferences if file exists
+            if os.path.exists(prefs_path):
+                existing_prefs = _sync_read_prefs(prefs_path)
+            else:
+                existing_prefs = {}
+            
+            # Update with new preferences
+            existing_prefs.update(self.prefs)
+            
+            # Write preferences using the helper function
+            data = prefs_to_json(existing_prefs)
+            _sync_write_prefs(data, prefs_path)
+            
+            logger.debug(f"Applied preferences to {prefs_path}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to apply preferences: {e}")
 
     def __call__(self):
         # the host and port will be added when starting
